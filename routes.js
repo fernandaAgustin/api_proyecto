@@ -12,8 +12,28 @@ const { sendResetEmail } = require('./mailer');
 const cors = require("cors");
 const xlsx = require("xlsx");
 const excel = multer({ dest: "excel/" });
+const moment = require('moment');
 
+const parseDate = (dateValue, isTimestamp = false) => {
+  let parsedDate;
 
+  // Si el valor es un número, lo tratamos como un número de serie de Excel
+  if (!isNaN(dateValue)) {
+    parsedDate = moment("1899-12-30").add(dateValue, "days"); // Ajuste por la base de Excel
+  } else {
+    parsedDate = moment(dateValue, ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"], true);
+  }
+
+  // Si el formato no es válido, devolver null
+  if (!parsedDate.isValid()) {
+    return null;
+  }
+
+  // Si es para timestamp, usamos formato completo con horas
+  return isTimestamp ? parsedDate.format("YYYY-MM-DD HH:mm:ss") : parsedDate.format("YYYY-MM-DD");
+};
+
+// Ruta para usuarios
 router.post("/excel-excel", excel.single("file"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "No se subió ningún archivo" });
@@ -28,9 +48,15 @@ router.post("/excel-excel", excel.single("file"), (req, res) => {
     return res.status(400).json({ message: "El archivo Excel no tiene datos válidos" });
   }
 
-  const values = data.map(({ id, nombre, correo, password, rol, fecha_nacimiento, sexo }) => [
-    id, nombre, correo, password, rol, fecha_nacimiento, sexo
-  ]);
+  const values = data.map(({ id, nombre, correo, password, rol, fecha_nacimiento, sexo }) => {
+    // Para usuarios, la fecha debe ser en formato date (sin horas)
+    const fechaFormateada = parseDate(fecha_nacimiento, false); 
+    if (!fechaFormateada) {
+      return res.status(400).json({ message: `Error con la fecha de nacimiento: ${fecha_nacimiento}` });
+    }
+
+    return [id, nombre, correo, password, rol, fechaFormateada, sexo];
+  });
 
   const query = "INSERT INTO usuarios (id, nombre, correo, password, rol, fecha_nacimiento, sexo) VALUES ?";
 
@@ -45,6 +71,7 @@ router.post("/excel-excel", excel.single("file"), (req, res) => {
   });
 });
 
+// Ruta para válvulas
 router.post("/excel-valvulas", excel.single("file"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "No se subió ningún archivo" });
@@ -60,7 +87,7 @@ router.post("/excel-valvulas", excel.single("file"), (req, res) => {
   }
 
   const values = data.map(({ id, nombre, ubicacion, estado, fecha_instalacion }) => [
-    id, nombre, ubicacion, estado, fecha_instalacion
+    id, nombre, ubicacion, estado, parseDate(fecha_instalacion, true)  // Usamos timestamp
   ]);
 
   const query = "INSERT INTO valvulas (id, nombre, ubicacion, estado, fecha_instalacion) VALUES ?";
@@ -76,7 +103,7 @@ router.post("/excel-valvulas", excel.single("file"), (req, res) => {
   });
 });
 
-
+// Ruta para sensores
 router.post("/excel-sensores", excel.single("file"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "No se subió ningún archivo" });
@@ -92,7 +119,7 @@ router.post("/excel-sensores", excel.single("file"), (req, res) => {
   }
 
   const values = data.map(({ id, nombre, tipo, ubicacion, fecha_instalacion }) => [
-    id, nombre, tipo, ubicacion, fecha_instalacion
+    id, nombre, tipo, ubicacion, parseDate(fecha_instalacion, true)  // Usamos timestamp
   ]);
 
   const query = "INSERT INTO sensores (id, nombre, tipo, ubicacion, fecha_instalacion) VALUES ?";
@@ -108,7 +135,7 @@ router.post("/excel-sensores", excel.single("file"), (req, res) => {
   });
 });
 
-
+// Ruta para riegos
 router.post("/excel-riego", excel.single("file"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "No se subió ningún archivo" });
@@ -117,14 +144,14 @@ router.post("/excel-riego", excel.single("file"), (req, res) => {
   const filePath = req.file.path;
   const workbook = xlsx.readFile(filePath);
   const sheetName = workbook.SheetNames[0];
-  const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+  const data = xlsx.utils.sheet_to_json(workbook.SheetNames[sheetName]);
 
   if (data.length === 0) {
     return res.status(400).json({ message: "El archivo Excel no tiene datos válidos" });
   }
 
   const values = data.map(({ id, valvula_id, cantidad_agua, duracion, fecha_riego }) => [
-    id, valvula_id, cantidad_agua, duracion, fecha_riego
+    id, valvula_id, cantidad_agua, duracion, parseDate(fecha_riego, true)  // Usamos timestamp
   ]);
 
   const query = "INSERT INTO riegos (id, valvula_id, cantidad_agua, duracion, fecha_riego) VALUES ?";
@@ -139,6 +166,8 @@ router.post("/excel-riego", excel.single("file"), (req, res) => {
     res.json({ message: "✅ Datos importados con éxito", filasInsertadas: result.affectedRows });
   });
 });
+
+
 
 router.post('/send-reset-code', (req, res) => {
   const { correo } = req.body;
