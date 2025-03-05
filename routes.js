@@ -21,7 +21,7 @@ const parseDate = (dateValue, isTimestamp = false) => {
   if (!isNaN(dateValue)) {
     parsedDate = moment("1899-12-30").add(dateValue, "days"); // Ajuste por la base de Excel
   } else {
-    parsedDate = moment(dateValue, ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"], true);
+    parsedDate = moment(dateValue, ["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD", "DD/MM/YY"], true);
   }
 
   // Si el formato no es válido, devolver null
@@ -144,15 +144,24 @@ router.post("/excel-riego", excel.single("file"), (req, res) => {
   const filePath = req.file.path;
   const workbook = xlsx.readFile(filePath);
   const sheetName = workbook.SheetNames[0];
-  const data = xlsx.utils.sheet_to_json(workbook.SheetNames[sheetName]);
+  const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+  console.log("Datos extraídos de Excel:", data);
 
   if (data.length === 0) {
     return res.status(400).json({ message: "El archivo Excel no tiene datos válidos" });
   }
 
-  const values = data.map(({ id, valvula_id, cantidad_agua, duracion, fecha_riego }) => [
-    id, valvula_id, cantidad_agua, duracion, parseDate(fecha_riego, true)  // Usamos timestamp
-  ]);
+  const values = data.map(({ id, valvula_id, cantidad_agua, duracion, fecha_riego }) => {
+    const fechaFormateada = parseDate(fecha_riego, true);
+    console.log("Fecha riego procesada:", fecha_riego, "->", fechaFormateada);
+    
+    if (!fechaFormateada) {
+      return res.status(400).json({ message: `Error con la fecha de riego: ${fecha_riego}` });
+    }
+    
+    return [id, valvula_id, cantidad_agua, duracion, fechaFormateada];
+  });
 
   const query = "INSERT INTO riegos (id, valvula_id, cantidad_agua, duracion, fecha_riego) VALUES ?";
 
@@ -160,7 +169,7 @@ router.post("/excel-riego", excel.single("file"), (req, res) => {
     fs.unlinkSync(filePath);
 
     if (err) {
-      return res.status(500).json({ message: "Error al insertar datos en la base de datos" });
+      return res.status(500).json({ message: "XXXError al insertar datos en la base de datos" });
     }
 
     res.json({ message: "✅ Datos importados con éxito", filasInsertadas: result.affectedRows });
