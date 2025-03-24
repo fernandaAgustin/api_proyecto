@@ -14,6 +14,128 @@ const xlsx = require("xlsx");
 const excel = multer({ dest: "excel/" });
 const moment = require('moment');
 
+const { Board, Proximity, Led, Servo, Sensor, Relay } = require("johnny-five");
+
+const board = new Board();
+
+board.on("ready", () => {
+    const lightSensor = new Sensor({ pin: "A2", freq: 10000 });  // Fotoresistor
+    const tempSensor = new Sensor("A1");  // LM35
+    const soilHumiditySensor = new Sensor("A0");  // Sensor de humedad del suelo
+    const proximitySensor = new Proximity({ controller: "HCSR04", pin: 7 });  // Sensor ultrasónico
+    const led = new Led(13);  // LED en pin 13
+    const fanRelay = new Relay(10);  // Relevador para el ventilador
+    const pumpRelay = new Relay(11);  // Relevador para la bomba
+    const secondPumpRelay = new Relay(12);  // Segunda bomba
+    const waterSensor = new Sensor.Digital(2);  // Sensor de agua
+    const servo = new Servo(9);  // Servo motor
+
+    // Leer y almacenar los datos cada 10 segundos
+    setInterval(() => {
+        // Sensor de luz
+        const lightLevel = lightSensor.value;
+        console.log(`Nivel de luz: ${lightLevel}`);
+        if (lightLevel > 1000) {
+            led.on();
+            connection.query("INSERT INTO light_data (light_level, led_status) VALUES (?, ?)", [lightLevel, "on"]);
+        } else {
+            led.off();
+            connection.query("INSERT INTO light_data (light_level, led_status) VALUES (?, ?)", [lightLevel, "off"]);
+        }
+
+        // Sensor de temperatura (LM35)
+        const temp = tempSensor.value
+        const conv = (temp / 1023) * 250;
+        const temperature = conv ;  // Convertir valor analógico a grados Celsius
+        console.log(`Temperatura: ${temperature.toFixed(2)} °C`);
+
+        let fanStatus = "off";
+        if (temperature < 30) {
+            fanRelay.open();
+            fanStatus = "on";
+        } else {
+            fanRelay.close();
+        }
+
+        connection.query("INSERT INTO temperature_data (temperature, fan_status) VALUES (?, ?)", [temperature.toFixed(2), fanStatus]);
+
+        // Sensor de humedad del suelo
+        const humidity = soilHumiditySensor.value;
+        console.log(`Humedad del suelo: ${humidity}`);
+        let pumpStatus = "off";
+        if (humidity < 3000) {
+            pumpRelay.open();
+            pumpStatus = "on";
+        } else {
+            pumpRelay.close();
+        }
+
+        // Sensor de proximidad
+        const distance = proximitySensor.cm;
+        console.log(`Distancia del objeto: ${distance} cm`);
+        let secondPumpStatus = "off";
+        if (distance < 10) {
+            pumpRelay.close();
+            pumpStatus = "off";
+            secondPumpRelay.open();
+            secondPumpStatus = "on";
+        } else {
+            secondPumpRelay.close();
+            pumpRelay.open();
+            pumpStatus = "on";
+        }
+
+        connection.query("INSERT INTO soil_humidity_data (humidity, pump_status, distance_cm, second_pump_status) VALUES (?, ?, ?, ?)", [humidity, pumpStatus, distance, secondPumpStatus]);
+
+        // Sensor de agua
+        waterSensor.on("change", () => {
+            const waterStatus = waterSensor.value === 1 ? "Hay agua" : "No hay agua";
+            console.log(waterStatus);
+
+            let servoStatus = "cerrado";
+            if (waterStatus === "Hay agua") {
+                servo.to(90);  // Abre la tapa
+                servoStatus = "abierto";
+            } else {
+                servo.to(0);  // Cierra la tapa
+            }
+
+            connection.query("INSERT INTO water_sensor_data (water_status, servo_status) VALUES (?, ?)", [waterStatus, servoStatus]);
+        });
+    }, 10000);  // Guardar cada 10 segundos
+
+});
+
+// Rutas para consultar las tablas
+router.get("/temperature", (req, res) => {
+  connection.query("SELECT * FROM temperature_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
+        if (err) throw err;
+        res.json(result);
+    });
+});
+
+router.get("/light", (req, res) => {
+  connection.query("SELECT * FROM light_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
+        if (err) throw err;
+        res.json(result);
+    });
+});
+
+router.get("/soil-humidity", (req, res) => {
+  connection.query("SELECT * FROM soil_humidity_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
+        if (err) throw err;
+        res.json(result);
+    });
+});
+
+router.get("/water-sensor", (req, res) => {
+  connection.query("SELECT * FROM water_sensor_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
+        if (err) throw err;
+        res.json(result);
+    });
+});
+
+
 const parseDate = (dateValue, isTimestamp = false) => {
   let parsedDate;
 
