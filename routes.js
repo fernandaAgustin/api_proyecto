@@ -1,4 +1,5 @@
 const express = require('express');
+const bodyParser = require('body-parser')
 const router = express.Router();
 const bcrypt = require("bcryptjs");
 const connection = require('./db');
@@ -13,145 +14,162 @@ const cors = require("cors");
 const xlsx = require("xlsx");
 const excel = multer({ dest: "excel/" });
 const moment = require('moment');
-require('events').EventEmitter.defaultMaxListeners = 30;  // O el valor que desees
 
 
-const { Board, Proximity, Led, Servo, Sensor, Relay } = require("johnny-five");
+// Middleware para analizar las solicitudes con datos en formato x-www-form-urlencoded
+router.use(bodyParser.urlencoded({ extended: true }));
+router.use(cors());
 
-const board = new Board();
+// Ruta de tu API
+router.post('/insertData', (req, res) => {
+  const data = req.body.data;
+  console.log("Datos recibidos:", data);
 
-board.on("ready", () => {
-  const lightSensor = new Sensor({ pin: "A2", freq: 10000 });  // Fotoresistor
-  const tempSensor = new Sensor("A1");  // LM35
-  const soilHumiditySensor = new Sensor("A0");  // Sensor de humedad del suelo
-  const proximitySensor = new Proximity({ controller: "HCSR04", pin: 7 });  // Sensor ultrasónico
-  const led = new Led(13);  // LED en pin 13
-  const fanRelay = new Relay(10);  // Relevador para el ventilador
-  const pumpRelay = new Relay(11);  // Relevador para la bomba
-  const secondPumpRelay = new Relay(12);  // Segunda bomba
-  const waterSensor = new Sensor.Digital(2);  // Sensor de agua
-  const servo = new Servo(9);  // Servo motor
+  if (!data) {
+      return res.status(400).send("No se recibieron datos");
+  }
 
-  // Leer y almacenar los datos cada 10 segundos
-  setInterval(() => {
-    // Sensor de luz
-    const lightLevel = lightSensor.value;
-    console.log(`Nivel de luz: ${lightLevel}`);
-    if (lightLevel > 1000) {
-      led.on();
-      connection.query("INSERT INTO light_data (light_level, led_status) VALUES (?, ?)", [lightLevel, "on"]);
-    } else {
-      led.off();
-      connection.query("INSERT INTO light_data (light_level, led_status) VALUES (?, ?)", [lightLevel, "off"]);
-    }
+  // Parsear los datos recibidos del ESP8266
+  const dataArray = data.split(',');
 
-    // Sensor de temperatura (LM35)
-    const temp = tempSensor.value
-    const conv = (temp / 1023) * 250;
-    const temperature = conv;  // Convertir valor analógico a grados Celsius
-    console.log(`Temperatura: ${temperature.toFixed(2)} °C`);
+  // Asegúrate de que los datos estén completos
+  if (dataArray.length < 15) {
+      console.log("Datos incompletos: ", dataArray);
+      return res.status(400).send("Los datos están incompletos");
+  }
 
-    let fanStatus = "off";
-    if (temperature > 30) {
-      fanRelay.open();
-      fanStatus = "on";
-    } else {
-      fanRelay.close();
-    }
+  try {
+      const temp1 = parseFloat(dataArray[0].split(':')[1]);
+      const temp2 = parseFloat(dataArray[1].split(':')[1]);
+      const light = parseInt(dataArray[2].split(':')[1]);
+      const water = dataArray[3].split(':')[1];
+      const humidity1 = parseInt(dataArray[4].split(':')[1]);
+      const humidity2 = parseInt(dataArray[5].split(':')[1]);
+      const distance = parseFloat(dataArray[6].split(':')[1]);
+      const relay1State = (dataArray[7].split(':')[1] == '1') ? 'encendido' : 'apagado';
+      const relay2State = (dataArray[8].split(':')[1] == '1') ? 'encendido' : 'apagado';
+      const ledState = (dataArray[9].split(':')[1] == '1') ? 'encendido' : 'apagado';
+      const servoPosition = parseInt(dataArray[10].split(':')[1]);
+      const relay3State = (dataArray[11].split(':')[1] == '1') ? 'encendido' : 'apagado';
+      const relay4State = (dataArray[12].split(':')[1] == '1') ? 'encendido' : 'apagado';
+      const relay5State = (dataArray[13].split(':')[1] == '1') ? 'encendido' : 'apagado';
+      const relay6State = (dataArray[14].split(':')[1] == '1') ? 'encendido' : 'apagado';
 
-    connection.query("INSERT INTO temperature_data (temperature, fan_status) VALUES (?, ?)", [temperature.toFixed(2), fanStatus]);
+      // Insertar los datos en la base de datos usando `query` de callback
+      const query = `INSERT INTO datos_sensores 
+          (nivel_temperatura1, nivel_temperatura2, luz, agua_detectada, 
+          humedad_suelo1, humedad_suelo2, distancia1, estado_ventilador1, 
+          estado_ventilador2, estado_led, posicion_servo, estado_bomba1, 
+          estado_bomba2, estado_bomba3, estado_bomba4) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-    // Sensor de humedad del suelo
-    const humidity = soilHumiditySensor.value;
-    console.log(`Humedad del suelo: ${humidity}`);
-    let pumpStatus = "off";
-    let secondPumpStatus = "off";
-
-    // Sensor de proximidad
-    const distance = proximitySensor.cm;
-    console.log(`Distancia del objeto: ${distance} cm`);
-
-    // Si la humedad es MENOR a 500, apagamos ambas bombas
-    if (humidity < 500) {
-      pumpRelay.close();
-      secondPumpRelay.close();
-      pumpStatus = "off";
-      secondPumpStatus = "off";
-    } else {
-      // Si la humedad es mayor a 500, controlamos la primera bomba
-      if (humidity > 500) {
-        pumpRelay.open();  // Enciende la primera bomba
-        pumpStatus = "on";
-      }
-
-      // Si la distancia es menor a 10 cm, apagamos la primera bomba y encendemos la segunda bomba
-      if (distance < 10) {
-        pumpRelay.close();  // Apaga la primera bomba
-        pumpStatus = "off";  // Cambia el estado de la primera bomba a apagado
-        secondPumpRelay.open();  // Enciende la segunda bomba
-        secondPumpStatus = "on";  // Cambia el estado de la segunda bomba a encendido
-      } else {
-        // Si la distancia no es menor a 10 cm, aseguramos que la primera bomba esté encendida
-        if (humidity < 3000) {
-          pumpRelay.open();  // Enciende la primera bomba
-          pumpStatus = "on";
-        }
-        secondPumpRelay.close();  // Apaga la segunda bomba si la distancia no es menor a 10 cm
-        secondPumpStatus = "off";
-      }
-    }
-
-    // Inserta los datos en la base de datos
-    connection.query(
-      "INSERT INTO soil_humidity_data (humidity, pump_status, distance_cm, second_pump_status) VALUES (?, ?, ?, ?)",
-      [humidity, pumpStatus, distance, secondPumpStatus]
-    );
-
-    // Sensor de agua
-    waterSensor.on("change", () => {
-      const waterStatus = waterSensor.value === 1 ? "Hay agua" : "No hay agua";
-      console.log(waterStatus);
-
-      let servoStatus = "cerrado";
-      if (waterStatus === "Hay agua") {
-        servo.to(90);  // Abre la tapa
-        servoStatus = "abierto";
-      } else {
-        servo.to(0);  // Cierra la tapa
-      }
-
-      connection.query("INSERT INTO water_sensor_data (water_status, servo_status) VALUES (?, ?)", [waterStatus, servoStatus]);
-    });
-  }, 10000);  // Guardar cada 10 segundos
-
+      connection.query(query, [
+          temp1, temp2, light, water, humidity1, humidity2, distance,
+          relay1State, relay2State, ledState, servoPosition,
+          relay3State, relay4State, relay5State, relay6State
+      ], (err, result) => {
+          if (err) {
+              console.error("Error al insertar los datos:", err);
+              return res.status(500).send("Error al insertar los datos");
+          }
+          res.status(200).send('Datos insertados correctamente');
+      });
+  } catch (err) {
+      console.log('Error al insertar los datos:', err);
+      res.status(500).send('Error al insertar los datos');
+  }
 });
 
-// Rutas para consultar las tablas
-router.get("/temperature", (req, res) => {
-  connection.query("SELECT * FROM temperature_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
-    if (err) throw err;
-    res.json(result);
+//TEMPERATURA
+router.get('/temUsuario', (req, res) => {
+  connection.query('SELECT nivel_temperatura1, nivel_temperatura2, estado_ventilador1, estado_ventilador2 FROM datos_sensores ORDER BY id DESC LIMIT 5', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
   });
 });
 
-router.get("/light", (req, res) => {
-  connection.query("SELECT * FROM light_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
-    if (err) throw err;
-    res.json(result);
+router.get('/temSistema', (req, res) => {
+  connection.query('SELECT nivel_temperatura1, nivel_temperatura2, estado_ventilador1, estado_ventilador2 FROM datos_sensores ORDER BY id DESC ', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
   });
 });
 
-router.get("/soil-humidity", (req, res) => {
-  connection.query("SELECT * FROM soil_humidity_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
-    if (err) throw err;
-    res.json(result);
+//AGUA
+router.get('/agUsuario', (req, res) => {
+  connection.query('SELECT agua_detectada, posicion_servo FROM datos_sensores ORDER BY id DESC LIMIT 5', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
   });
 });
 
-router.get("/water-sensor", (req, res) => {
-  connection.query("SELECT * FROM water_sensor_data ORDER BY timestamp DESC LIMIT 10", (err, result) => {
-    if (err) throw err;
-    res.json(result);
+router.get('/agSistema', (req, res) => {
+  connection.query('SELECT agua_detectada, posicion_servo FROM datos_sensores ORDER BY id DESC ', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
+  });
+});
+
+//LUZ
+router.get('/luzUsuario', (req, res) => {
+  connection.query('SELECT luz, estado_led FROM datos_sensores ORDER BY id DESC LIMIT 5', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
+  });
+});
+
+router.get('/luzSistema', (req, res) => {
+  connection.query('SELECT luz, estado_led FROM datos_sensores ORDER BY id DESC ', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
+  });
+});
+
+//HUMEDAD
+
+router.get('/humUsuario', (req, res) => {
+  connection.query('SELECT humedad_suelo1, estado_bomba1, estado_bomba2, humedad_suelo2, estado_bomba3, estado_bomba4,distancia1 FROM datos_sensores ORDER BY id DESC LIMIT 5', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
+  });
+});
+
+router.get('/humSistema', (req, res) => {
+  connection.query('SELECT humedad_suelo1, estado_bomba1, estado_bomba2, humedad_suelo2, estado_bomba3, estado_bomba4,distancia1 FROM datos_sensores ORDER BY id DESC ', (err, results) => {
+    if (err) {
+      console.error('Error al obtener registros:', err);
+      res.status(500).json({ error: 'Error al obtener registros' });
+      return;
+    }
+    res.json(results);
   });
 });
 
