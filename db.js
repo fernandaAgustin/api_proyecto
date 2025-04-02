@@ -1,12 +1,12 @@
 const mysql = require('mysql2');
 
 const connection = mysql.createConnection({
-  host: 'database-1.c5ksy2okacbh.us-east-2.rds.amazonaws.com',
+  host: 'database-1.c5ksy2okacbh.us-east-2.rds.amazonaws.com',  // Verifica este endpoint
   user: 'admin',
   password: '15470294Cesar!',
   database: 'sistemariego',
   port: 3306,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false }  // Agregar esta línea si usas un certificado autofirmado
 });
 
 connection.connect((err) => {
